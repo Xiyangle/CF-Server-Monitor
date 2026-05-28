@@ -735,7 +735,6 @@ export async function handleServerDetail(request, env, sys, viewId) {
     const serverId = "${viewId}";
     let currentHours = 1;
     let statusTimer = null;
-    let cachedOneHourData = null;
     
     // 格式化工具
     const formatBytes = (bytes) => {
@@ -1134,27 +1133,9 @@ export async function handleServerDetail(request, env, sys, viewId) {
     // =============================================
     async function loadAllHistory(hours) {
       try {
-        let allData;
-        
-        if (hours <= 1.05) {
-          const res = await fetch(\`/api/history/all?id=\${serverId}&hours=1\`);
-          if (!res.ok) return;
-          allData = await res.json();
-          cachedOneHourData = allData;
-        } else {
-          if (!cachedOneHourData) {
-            const res1h = await fetch(\`/api/history/all?id=\${serverId}&hours=1\`);
-            if (res1h.ok) {
-              cachedOneHourData = await res1h.json();
-            }
-          }
-          
-          const resAgg = await fetch(\`/api/history/all?id=\${serverId}&hours=\${hours}\`);
-          if (!resAgg.ok) return;
-          const aggData = await resAgg.json();
-          
-          allData = cachedOneHourData ? [...cachedOneHourData, ...aggData] : aggData;
-        }
+        const res = await fetch(`/api/history/all?id=${serverId}&hours=${hours}`);
+        if (!res.ok) return;
+        const allData = await res.json();
         
         updateChartDataset(charts.cpu, 0, allData, 'timestamp', 'cpu');
         updateChartDataset(charts.ram, 0, allData, 'timestamp', 'ram');

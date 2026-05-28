@@ -194,35 +194,35 @@ const AGGREGATE_PHASES = [
     minHours: 1,
     maxHours: 3,
     bucketSeconds: 240,
-    sourceBucketSeconds: 120
+    sourceBucketSeconds: null
   },
   {
     name: '3-6小时(8分钟桶)',
     minHours: 3,
     maxHours: 6,
     bucketSeconds: 480,
-    sourceBucketSeconds: 240
+    sourceBucketSeconds: null
   },
   {
     name: '6-24小时(16分钟桶)',
     minHours: 6,
     maxHours: 24,
     bucketSeconds: 960,
-    sourceBucketSeconds: 480
+    sourceBucketSeconds: null
   },
   {
     name: '24-48小时(32分钟桶)',
     minHours: 24,
     maxHours: 48,
     bucketSeconds: 1920,
-    sourceBucketSeconds: 960
+    sourceBucketSeconds: null
   },
   {
     name: '48小时及以上(60分钟桶)',
     minHours: 48,
     maxHours: 1000,
     bucketSeconds: 3600,
-    sourceBucketSeconds: 1920
+    sourceBucketSeconds: null
   }
 ];
 
@@ -492,33 +492,34 @@ export async function getMetricsHistory(db, serverId, hours, columns) {
   const now = Date.now();
   const cutoff = now - (hours * 60 * 60 * 1000);
   
-  if (hours <= 1.05) {
-    const result = await db.prepare(`
+  const aggColumns = mapColumnsToAggregated(columns);
+  const rawCutoff = now - (0.5 * 60 * 60 * 1000);
+  
+  let result = [];
+  
+  if (cutoff < rawCutoff) {
+    const rawResult = await db.prepare(`
       SELECT timestamp, ${columns}
       FROM metrics_history
       WHERE server_id = ?
         AND typeof(timestamp) = 'integer'
         AND timestamp >= ?
       ORDER BY timestamp ASC
-    `).bind(serverId, cutoff).all();
+    `).bind(serverId, Math.max(cutoff, rawCutoff)).all();
     
-    return result.results.map(row => ({
+    const rawData = rawResult.results.map(row => ({
       ...row,
       timestamp: typeof row.timestamp === 'string' ? new Date(row.timestamp).getTime() : Number(row.timestamp)
     }));
+    result = result.concat(rawData);
   }
-  
-  const aggColumns = mapColumnsToAggregated(columns);
-  const aggCutoff = now - (1 * 60 * 60 * 1000);
-  
-  let result = [];
   
   for (const phase of AGGREGATE_PHASES) {
     const phaseStart = now - (phase.maxHours * 60 * 60 * 1000);
     const phaseEnd = now - (phase.minHours * 60 * 60 * 1000);
     
     const queryStart = Math.max(cutoff, phaseStart);
-    const queryEnd = Math.min(phaseEnd, aggCutoff);
+    const queryEnd = Math.min(phaseEnd, rawCutoff);
     
     if (queryStart >= queryEnd) continue;
     
