@@ -127,6 +127,7 @@ body::before {
 .terminal-dots {
     display: flex;
     gap: 8px;
+    width: 190px;
 }
 
 .terminal-dot {
@@ -1728,6 +1729,24 @@ body::before {
 @media (max-width: 768px) {
     .container {
         padding: 8px;
+    }
+
+    .terminal-dots{
+        gap: 3px;
+        width: auto;
+    }
+
+    .terminal-dot{
+        width: 6px;
+        height: 6px;
+    }
+
+    .lang-toggle, .theme-toggle{
+        padding: 0;
+    }
+
+    .terminal-header-controls{
+        gap: 8px;
     }
 
     .servers-grid {

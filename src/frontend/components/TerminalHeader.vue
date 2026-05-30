@@ -22,7 +22,7 @@
         >中</button>
       </div>
       <div class="theme-toggle-wrapper">
-        <span class="theme-label">{{ t('theme') }}:</span>
+        <!-- <span class="theme-label">{{ t('theme') }}:</span> -->
         <div class="theme-toggle">
           <button 
             class="theme-btn" 
