@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     CF-Server-Monitor Windows 探针 (PowerShell 版)
@@ -87,9 +87,7 @@ if (-not $STA -and $host.Runspace.ApartmentState -ne 'STA') {
     exit 0
 }
 
-$ErrorActionPreference = "Continue"
 $DebugPreference = "SilentlyContinue"
-trap { Write-Host "捕获到异常: $_" -ForegroundColor Red; continue }
 
 $ErrorActionPreference = "Stop"
 
@@ -247,7 +245,8 @@ function ConvertFrom-AgentConfigResponse {
     if ($reset -lt 0 -or $reset -gt 31 -or $schema -ne 2) { throw "reset_day 或 schema_version 无效" }
 
     $canonical = "collect_interval=$collect&report_interval=$report&reset_day=$reset&schema_version=$schema&custom_ct=$($values.custom_ct)&custom_cu=$($values.custom_cu)&custom_cm=$($values.custom_cm)&custom_bd=$($values.custom_bd)"
-    if ($Body -cne $canonical -and $Body -cne "$canonical&rx_correction=$($values.rx_correction)&tx_correction=$($values.tx_correction)") {
+    $bodyWithoutCorrections = $Body -replace '&rx_correction=[^&]*', '' -replace '&tx_correction=[^&]*', ''
+    if ($bodyWithoutCorrections -cne $canonical) {
         throw "动态配置不是规范格式"
     }
 
@@ -290,6 +289,7 @@ function Invoke-AsAdmin {
     if ($Id) { $argList += " -Id `"$Id`"" }
     if ($Secret) { $argList += " -Secret `"$Secret`"" }
     if ($Url) { $argList += " -Url `"$Url`"" }
+    if ($CollectInterval -and $CollectInterval -ne "0") { $argList += " -CollectInterval `"$CollectInterval`"" }
     if ($ReportInterval -and $ReportInterval -ne "60") { $argList += " -ReportInterval `"$ReportInterval`"" }
     if ($ResetDay -and $ResetDay -ne "1") { $argList += " -ResetDay `"$ResetDay`"" }
     if ($RxCorrection) { $argList += " -RxCorrection `"$RxCorrection`"" }
@@ -353,14 +353,28 @@ function Get-MemoryInfo {
 
 function Get-SwapInfo {
     try {
-        $cs = Get-CimInstance Win32_ComputerSystem
-        $totalMB = [math]::Round($cs.TotalPhysicalMemory / 1024 / 1024)
-        $os = Get-CimInstance Win32_OperatingSystem
-        $freeVirtual = [math]::Round($os.FreeVirtualMemory / 1024)
-        $freePhys = [math]::Round($os.FreePhysicalMemory / 1024)
-        $usedMB = $totalMB - $freePhys
-        $swapTotal = [math]::Max($freeVirtual - $freePhys, 0)
-        return @{ total = $swapTotal; used = [math]::Min($usedMB, $swapTotal) }
+        $pageFiles = Get-CimInstance Win32_PageFile -ErrorAction SilentlyContinue
+        if ($pageFiles) {
+            $totalMB = 0
+            foreach ($pf in $pageFiles) {
+                if ($pf.MaxSize) {
+                    $totalMB += [math]::Round($pf.MaxSize / 1024)
+                } elseif ($pf.Size) {
+                    $totalMB += [math]::Round($pf.Size / 1024)
+                }
+            }
+            $usage = Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue
+            $usedMB = 0
+            if ($usage) {
+                foreach ($u in $usage) {
+                    $usedMB += [math]::Round($u.CurrentUsage / 1024)
+                }
+            }
+            if ($totalMB -gt 0) {
+                return @{ total = $totalMB; used = [math]::Min($usedMB, $totalMB) }
+            }
+        }
+        return @{ total = 0; used = 0 }
     } catch {
         return @{ total = 0; used = 0 }
     }
@@ -485,13 +499,13 @@ function Get-TcpPing {
 function Get-Probe {
     param([string]$TargetHost, [int]$Count = 4)
     $TargetHost = $TargetHost.Trim()
-    if (-not $TargetHost) { return @{ rtt = ""; loss = "" } }
+    if (-not $TargetHost) { return @{ rtt = "null"; loss = "100" } }
     $ok = 0; $totalRtt = 0
     for ($i = 0; $i -lt $Count; $i++) {
         $r = Get-TcpPing -TargetHost $TargetHost
         if ($r -match '^\d+$') { $ok++; $totalRtt += [int]$r }
     }
-    $rtt = if ($ok -gt 0) { [math]::Floor($totalRtt / $ok).ToString() } else { "0" }
+    $rtt = if ($ok -gt 0) { [math]::Floor($totalRtt / $ok).ToString() } else { "null" }
     $loss = [math]::Floor(($Count - $ok) / $Count * 100).ToString()
     return @{ rtt = $rtt; loss = $loss }
 }
@@ -540,7 +554,7 @@ function Start-PingBackgroundJob {
                 $r = Get-TcpPing -TargetHost $TargetHost
                 if ($r -match '^\d+$') { $ok++; $totalRtt += [int]$r }
             }
-            $rtt = if ($ok -gt 0) { [math]::Floor($totalRtt / $ok).ToString() } else { "0" }
+            $rtt = if ($ok -gt 0) { [math]::Floor($totalRtt / $ok).ToString() } else { "null" }
             $loss = [math]::Floor(($Count - $ok) / $Count * 100).ToString()
             return @{ rtt = $rtt; loss = $loss }
         }
@@ -562,8 +576,7 @@ function Start-PingBackgroundJob {
         [System.IO.File]::WriteAllText($tempFile, $json, [System.Text.Encoding]::UTF8)
     }
 
-    $jobArgs = @($CtNode, $CuNode, $CmNode, $BdNode, $TempFile)
-    Start-Job -ScriptBlock $jobScript -ArgumentList $jobArgs -Name "CFProbePingJob" | Out-Null
+    Start-Job -ScriptBlock $jobScript -ArgumentList $CtNode, $CuNode, $CmNode, $BdNode, $TempFile -Name "CFProbePingJob" | Out-Null
 }
 
 function Read-PingResults {
@@ -639,7 +652,9 @@ function Save-TrafficData {
     foreach ($key in $Data.Keys) {
         $lines += "$key=$($Data[$key])"
     }
-    $lines -join "`n" | Set-Content $TRAFFIC_FILE -Encoding UTF8
+    $tmpFile = "$TRAFFIC_FILE.tmp"
+    $lines -join "`n" | Set-Content $tmpFile -Encoding UTF8
+    Move-Item -LiteralPath $tmpFile -Destination $TRAFFIC_FILE -Force -ErrorAction SilentlyContinue
 }
 
 function Apply-TrafficCorrection {
@@ -944,6 +959,10 @@ function Start-TimerCollectLoop {
     $script:cs_reportInterval = $effectiveReportInterval
     $script:cs_resetDay = $resetDay
     $script:cs_configMd5 = $configMd5
+    $script:cs_ctNode = $ctNode
+    $script:cs_cuNode = $cuNode
+    $script:cs_cmNode = $cmNode
+    $script:cs_bdNode = $bdNode
 
     $pingTempFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "cf_probe_ping_results.json")
 
@@ -967,10 +986,10 @@ function Start-TimerCollectLoop {
             $srvId = $serverId
             $sec = $secret
             $wUrl = $workerUrl
-            $ctN = if ($config.ct_node) { $config.ct_node } else { $ctNode }
-            $cuN = if ($config.cu_node) { $config.cu_node } else { $cuNode }
-            $cmN = if ($config.cm_node) { $config.cm_node } else { $cmNode }
-            $bdN = if ($config.bd_node) { $config.bd_node } else { $bdNode }
+            $ctN = if ($script:cs_ctNode) { $script:cs_ctNode } elseif ($config.ct_node) { $config.ct_node } else { $ctNode }
+            $cuN = if ($script:cs_cuNode) { $script:cs_cuNode } elseif ($config.cu_node) { $config.cu_node } else { $cuNode }
+            $cmN = if ($script:cs_cmNode) { $script:cs_cmNode } elseif ($config.cm_node) { $config.cm_node } else { $cmNode }
+            $bdN = if ($script:cs_bdNode) { $script:cs_bdNode } elseif ($config.bd_node) { $config.bd_node } else { $bdNode }
             $rDay = $script:cs_resetDay
             $rInterval = $script:cs_reportInterval
             $pFile = $pingTempFile
@@ -1122,7 +1141,9 @@ function Start-TimerCollectLoop {
                                 if ($remoteConfig.ContainsKey('cu_node')) { $script:cs_cuNode = $remoteConfig.cu_node }
                                 if ($remoteConfig.ContainsKey('cm_node')) { $script:cs_cmNode = $remoteConfig.cm_node }
                                 if ($remoteConfig.ContainsKey('bd_node')) { $script:cs_bdNode = $remoteConfig.bd_node }
+                                $timer.Stop()
                                 $timer.Interval = $effectiveRemoteReportInterval * 1000
+                                $timer.Start()
                                 Write-Log "动态配置已应用: md5=$($remoteConfig.config_md5) report_interval=$($remoteConfig.report_interval)s ct=$($remoteConfig.ct_node) cu=$($remoteConfig.cu_node) cm=$($remoteConfig.cm_node) bd=$($remoteConfig.bd_node)" "INFO"
 
                                 $script:cs_lastPingCheck = 0
@@ -1138,8 +1159,8 @@ function Start-TimerCollectLoop {
 
                                 $existingPingJob = Get-Job -Name "CFProbePingJob" -ErrorAction SilentlyContinue
                                 if ($existingPingJob) {
-                                    Stop-Job -Name "CFProbePingJob" -ErrorAction SilentlyContinue | Out-Null
-                                    Remove-Job -Name "CFProbePingJob" -Force -ErrorAction SilentlyContinue | Out-Null
+                                    $existingPingJob | Stop-Job -ErrorAction SilentlyContinue | Out-Null
+                                    $existingPingJob | Remove-Job -Force -ErrorAction SilentlyContinue | Out-Null
                                 }
                                 $newCtNode = if ($remoteConfig.ContainsKey('ct_node')) { $remoteConfig.ct_node } else { $config.ct_node }
                                 $newCuNode = if ($remoteConfig.ContainsKey('cu_node')) { $remoteConfig.cu_node } else { $config.cu_node }
@@ -1239,7 +1260,6 @@ function Install-Service {
     } else {
         Write-Host "配置保存失败！" -ForegroundColor Red
         Write-Host "请检查是否有写入权限: $CONFIG_DIR" -ForegroundColor Yellow
-        Read-Host "按 Enter 退出"
         return
     }
 
@@ -1351,14 +1371,6 @@ function Install-Service {
     }
 
     Write-Host "查看日志: $LOG_FILE" -ForegroundColor Green
-    Write-Host "按 Enter 查看实时日志，或关闭窗口退出..." -ForegroundColor Yellow
-    Read-Host
-    # 显示实时日志
-    if (Test-Path $LOG_FILE) {
-        Get-Content -Path $LOG_FILE -Wait
-    } else {
-        Write-Host "日志文件尚未生成，请稍后检查" -ForegroundColor Yellow
-    }
 }
 
 function Uninstall-Service {
@@ -1475,5 +1487,4 @@ try {
     Write-Host "错误详情: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "错误行: $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Red
     Write-Host "=============================================" -ForegroundColor Red
-    Read-Host "按 Enter 退出"
 }

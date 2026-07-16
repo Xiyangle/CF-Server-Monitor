@@ -91,17 +91,6 @@ detect_runtime_mode() {
     fi
 }
 
-sed_escape() {
-    local val="${1:-}"
-    val="${val//\\/\\\\}"
-    val="${val//&/\\&}"
-    val="${val//@/\\@}"
-    val="${val//\//\\/}"
-    val="${val//|/\\|}"
-    val="${val//\"/\\\"}"
-    echo -n "$val"
-}
-
 check_root() {
     if [ "$(id -u)" != "0" ]; then
         error "请使用 root 权限运行此脚本: sudo bash $0"
@@ -445,7 +434,7 @@ apply_traffic_correction() {
     log_info "Traffic correction applied: RX=${rx_val}GB (${rx_bytes} bytes) TX=${tx_val}GB (${tx_bytes} bytes)"
 
     mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
-    cat > "${TRAFFIC_DATA_FILE}" << EOF
+    cat > "${TRAFFIC_DATA_FILE}.tmp" << EOF
 RX_PREV=${saved_rx_prev}
 TX_PREV=${saved_tx_prev}
 RX_PERIOD=${saved_rx_period}
@@ -453,6 +442,7 @@ TX_PERIOD=${saved_tx_period}
 LAST_CHECK=${now_ts}
 PERIOD_START=${saved_period_start}
 EOF
+    mv "${TRAFFIC_DATA_FILE}.tmp" "${TRAFFIC_DATA_FILE}" 2>/dev/null || true
 }
 
 # 严苛环境下的规范 JSON 字段转义函数
@@ -904,7 +894,7 @@ while true; do
     GPU=$(echo "$GPU_METRICS" | awk 'NR==1{print $1}'); GPU=${GPU:-null}
     GPU_INFO_VALUE=$(echo "$GPU_METRICS" | awk 'NR==2{print}')
     [ -z "${GPU_INFO_VALUE}" ] && GPU_INFO_VALUE="null"
-    LOAD_AVG=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}' || echo "0 0 0")
+    LOAD_AVG=$(awk '{print $1, $2, $3}' /proc/loadavg 2>/dev/null); LOAD_AVG=${LOAD_AVG:-"0 0 0"}
     PROCESSES=$(ps -e 2>/dev/null | wc -l || echo 0)
 
     # ---------------- TCP ----------------
@@ -960,18 +950,10 @@ while true; do
     # ------------------ 读取共享内存 (Rename 机制下绝对无竞态) ------------------
     [ -f /dev/shm/.cf_ipv4 ] && IPV4=$(cat /dev/shm/.cf_ipv4) || IPV4="0"
     [ -f /dev/shm/.cf_ipv6 ] && IPV6=$(cat /dev/shm/.cf_ipv6) || IPV6="0"
-    for _node in ct cu cm bd; do
-        _f="/dev/shm/.cf_probe_${_node}"
-        if [ -f "$_f" ]; then
-            _p=$(cat "$_f")
-            eval "PING_$(echo $_node | tr a-z A-Z)=\"\${_p%% *}\""
-            eval "LOSS_$(echo $_node | tr a-z A-Z)=\"\${_p##* }\""
-        else
-            eval "PING_$(echo $_node | tr a-z A-Z)=\"\""
-            eval "LOSS_$(echo $_node | tr a-z A-Z)=\"\""
-            log_debug "[read] $_node: FILE NOT FOUND -> ping='' loss=''"
-        fi
-    done
+    if [ -f /dev/shm/.cf_probe_ct ]; then _p=$(cat /dev/shm/.cf_probe_ct); PING_CT=${_p%% *}; LOSS_CT=${_p##* }; else PING_CT=""; LOSS_CT=""; fi
+    if [ -f /dev/shm/.cf_probe_cu ]; then _p=$(cat /dev/shm/.cf_probe_cu); PING_CU=${_p%% *}; LOSS_CU=${_p##* }; else PING_CU=""; LOSS_CU=""; fi
+    if [ -f /dev/shm/.cf_probe_cm ]; then _p=$(cat /dev/shm/.cf_probe_cm); PING_CM=${_p%% *}; LOSS_CM=${_p##* }; else PING_CM=""; LOSS_CM=""; fi
+    if [ -f /dev/shm/.cf_probe_bd ]; then _p=$(cat /dev/shm/.cf_probe_bd); PING_BD=${_p%% *}; LOSS_BD=${_p##* }; else PING_BD=""; LOSS_BD=""; fi
 
     # 安全地构建闭合规范的 JSON 数据流
     EOS=$(escape_json "${OS}")
@@ -1128,6 +1110,7 @@ install_probe() {
     RX_CORRECTION=""
     TX_CORRECTION=""
     DEBUG_MODE=""
+    CONFIG_MD5=""
 
     for arg in "$@"; do
         case "$arg" in
@@ -1175,7 +1158,6 @@ CU_NODE="${CU_NODE:-}"
 CM_NODE="${CM_NODE:-}"
 BD_NODE="${BD_NODE:-}"
 RESET_DAY="${RESET_DAY}"
-DEBUG_MODE="${DEBUG_MODE}"
 CONFIG_MD5="none"
 EOF
             chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
@@ -1194,7 +1176,7 @@ EOF
                     CM_NODE) CM_NODE="${value%\"}"; CM_NODE="${CM_NODE#\"}" ;;
                     BD_NODE) BD_NODE="${value%\"}"; BD_NODE="${BD_NODE#\"}" ;;
                     RESET_DAY) RESET_DAY="${value%\"}"; RESET_DAY="${RESET_DAY#\"}" ;;
-                    DEBUG_MODE) DEBUG_MODE="${value%\"}"; DEBUG_MODE="${DEBUG_MODE#\"}" ;;
+                    CONFIG_MD5) CONFIG_MD5="${value%\"}"; CONFIG_MD5="${CONFIG_MD5#\"}" ;;
                 esac
             done < "${CONFIG_FILE}"
         fi
@@ -1233,7 +1215,6 @@ CU_NODE="${CU_NODE:-}"
 CM_NODE="${CM_NODE:-}"
 BD_NODE="${BD_NODE:-}"
 RESET_DAY="${RESET_DAY}"
-DEBUG_MODE="${DEBUG_MODE}"
 CONFIG_MD5="none"
 EOF
         chmod 600 "${CONFIG_FILE}" 2>/dev/null || true
@@ -1243,6 +1224,7 @@ EOF
     COLLECT_INTERVAL=${COLLECT_INTERVAL:-0}
     REPORT_INTERVAL=${REPORT_INTERVAL:-60}
     DEBUG_MODE=$(normalize_debug_mode "${DEBUG_MODE:-0}")
+    CONFIG_MD5=${CONFIG_MD5:-none}
 
     if [ -n "${RX_CORRECTION}" ] || [ -n "${TX_CORRECTION}" ]; then
         step "应用流量校正..."

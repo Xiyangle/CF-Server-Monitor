@@ -286,8 +286,8 @@ persist_dynamic_config() {
 
 apply_remote_config() {
     local response_file="$1" header_file="$2" body bytes new_md5
-    local new_collect new_report new_reset new_schema new_ct new_cu new_cm new_bd
-    local new_rx_corr new_tx_corr
+    _cf_new_collect new_report new_reset new_schema new_ct new_cu new_cm new_bd
+    _cf_new_rx_corr new_tx_corr
     bytes=$(wc -c < "$response_file" 2>/dev/null || echo 9999)
     [ "$bytes" -le 1024 ] || return 1
     body=$(cat "$response_file" 2>/dev/null) || return 1
@@ -339,7 +339,7 @@ apply_remote_config() {
             kill "$WORKER_PID" 2>/dev/null || true
             wait "$WORKER_PID" 2>/dev/null || true
         fi
-        rm -f /dev/shm/.cf_probe_* 2>/dev/null || true
+        rm -f /tmp/.cf_probe_* 2>/dev/null || true
         run_network_worker &
         WORKER_PID=$!
 
@@ -370,7 +370,7 @@ is_valid_correction_value() {
 }
 
 send_correction_confirm() {
-    local rx_val tx_val payload http_code
+    _cf_rx_val tx_val payload http_code
     rx_val=$(normalize_correction_value "$1")
     tx_val=$(normalize_correction_value "$2")
     is_valid_correction_value "$rx_val" && is_valid_correction_value "$tx_val" || return 1
@@ -388,41 +388,41 @@ send_correction_confirm() {
 }
 
 apply_traffic_correction() {
-    local rx_val="${1:-0}"
-    local tx_val="${2:-0}"
-    [ -z "$rx_val" ] && rx_val=0
-    [ -z "$tx_val" ] && tx_val=0
-    is_valid_correction_value "$rx_val" && is_valid_correction_value "$tx_val" || return 1
-    local rx_bytes=0 tx_bytes=0
-    rx_bytes=$(printf '%s' "$rx_val" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}')
-    tx_bytes=$(printf '%s' "$tx_val" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}')
-    local saved_rx_prev=0 saved_tx_prev=0 saved_rx_period=0 saved_tx_period=0 saved_last_check=0 saved_period_start=0
+    _cf_tc_rx_val="${1:-0}"
+    _cf_tc_tx_val="${2:-0}"
+    [ -z "$_cf_tc_rx_val" ] && _cf_tc_rx_val=0
+    [ -z "$_cf_tc_tx_val" ] && _cf_tc_tx_val=0
+    is_valid_correction_value "$_cf_tc_rx_val" && is_valid_correction_value "$_cf_tc_tx_val" || return 1
+    _cf_tc_rx_bytes=0; _cf_tc_tx_bytes=0
+    _cf_tc_rx_bytes=$(printf '%s' "$_cf_tc_rx_val" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}')
+    _cf_tc_tx_bytes=$(printf '%s' "$_cf_tc_tx_val" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}')
+    _cf_tc_saved_rx_prev=0; _cf_tc_saved_tx_prev=0; _cf_tc_saved_rx_period=0; _cf_tc_saved_tx_period=0; _cf_tc_saved_last_check=0; _cf_tc_saved_period_start=0
     if [ -f "${TRAFFIC_DATA_FILE}" ]; then
         while IFS='=' read -r key value; do
             case "$key" in
-                RX_PREV) saved_rx_prev="${value%%\"*}"; saved_rx_prev="${saved_rx_prev#\"}" ;;
-                TX_PREV) saved_tx_prev="${value%%\"*}"; saved_tx_prev="${saved_tx_prev#\"}" ;;
-                RX_PERIOD) saved_rx_period="${value%%\"*}"; saved_rx_period="${saved_rx_period#\"}" ;;
-                TX_PERIOD) saved_tx_period="${value%%\"*}"; saved_tx_period="${saved_tx_period#\"}" ;;
-                LAST_CHECK) saved_last_check="${value%%\"*}"; saved_last_check="${saved_last_check#\"}" ;;
-                PERIOD_START) saved_period_start="${value%%\"*}"; saved_period_start="${saved_period_start#\"}" ;;
+                RX_PREV) _cf_tc_saved_rx_prev="${value%%\"*}"; _cf_tc_saved_rx_prev="${_cf_tc_saved_rx_prev#\"}" ;;
+                TX_PREV) _cf_tc_saved_tx_prev="${value%%\"*}"; _cf_tc_saved_tx_prev="${_cf_tc_saved_tx_prev#\"}" ;;
+                RX_PERIOD) _cf_tc_saved_rx_period="${value%%\"*}"; _cf_tc_saved_rx_period="${_cf_tc_saved_rx_period#\"}" ;;
+                TX_PERIOD) _cf_tc_saved_tx_period="${value%%\"*}"; _cf_tc_saved_tx_period="${_cf_tc_saved_tx_period#\"}" ;;
+                LAST_CHECK) _cf_tc_saved_last_check="${value%%\"*}"; _cf_tc_saved_last_check="${_cf_tc_saved_last_check#\"}" ;;
+                PERIOD_START) _cf_tc_saved_period_start="${value%%\"*}"; _cf_tc_saved_period_start="${_cf_tc_saved_period_start#\"}" ;;
             esac
         done < "${TRAFFIC_DATA_FILE}"
     fi
-    local now_ts
-    now_ts=$(date +%s)
-    saved_rx_period=${rx_bytes}
-    saved_tx_period=${tx_bytes}
-    log_info "Traffic correction applied: RX=${rx_val}GB (${rx_bytes} bytes) TX=${tx_val}GB (${tx_bytes} bytes)"
+    _cf_tc_now_ts=$(date +%s)
+    _cf_tc_saved_rx_period=${_cf_tc_rx_bytes}
+    _cf_tc_saved_tx_period=${_cf_tc_tx_bytes}
+    log_info "Traffic correction applied: RX=${_cf_tc_rx_val}GB (${_cf_tc_rx_bytes} bytes) TX=${_cf_tc_tx_val}GB (${_cf_tc_tx_bytes} bytes)"
     mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
-    cat > "${TRAFFIC_DATA_FILE}" << EOF
-RX_PREV=${saved_rx_prev}
-TX_PREV=${saved_tx_prev}
-RX_PERIOD=${saved_rx_period}
-TX_PERIOD=${saved_tx_period}
-LAST_CHECK=${now_ts}
-PERIOD_START=${saved_period_start}
+    cat > "${TRAFFIC_DATA_FILE}.tmp" << EOF
+RX_PREV=${_cf_tc_saved_rx_prev}
+TX_PREV=${_cf_tc_saved_tx_prev}
+RX_PERIOD=${_cf_tc_saved_rx_period}
+TX_PERIOD=${_cf_tc_saved_tx_period}
+LAST_CHECK=${_cf_tc_now_ts}
+PERIOD_START=${_cf_tc_saved_period_start}
 EOF
+    mv "${TRAFFIC_DATA_FILE}.tmp" "${TRAFFIC_DATA_FILE}" 2>/dev/null || true
 }
 
 # 严苛环境下的规范 JSON 字段转义函数
@@ -456,10 +456,18 @@ get_period_start_ts() {
     local reset_day="$1"
     [ "$reset_day" -eq 0 ] 2>/dev/null && { echo "0"; return; }
     local now_ts="$2"
-    local year month day
-    year=$(date -u -d "@${now_ts}" '+%Y' 2>/dev/null || date -u -r "${now_ts}" '+%Y' 2>/dev/null)
-    month=$(date -u -d "@${now_ts}" '+%m' 2>/dev/null || date -u -r "${now_ts}" '+%m' 2>/dev/null)
-    day=$(date -u -d "@${now_ts}" '+%d' 2>/dev/null || date -u -r "${now_ts}" '+%d' 2>/dev/null)
+    _cf_year month day
+    # 用 awk 将 epoch 秒转换为 year month day（UTC），避免 BusyBox date -d 不可用
+    local _date_parts
+    _date_parts=$(awk 'BEGIN{
+        t='"${now_ts}"'; d=int(t/86400)+719468; y=int((d-122.1)/365.25);
+        m=int((d-365.25*y+122.1)/30.6001); day=d-int(30.6001*(m+(m>2?1:0)-3)+1.5);
+        if(m<14) m=m-1; else { m=m-13; if(m>2) y=y+1 }
+        printf "%04d %02d %02d\n", y, m, day
+    }')
+    year=$(echo "$_date_parts" | awk '{print $1}')
+    month=$(echo "$_date_parts" | awk '{print $2}')
+    day=$(echo "$_date_parts" | awk '{print $3}')
     
     local target_day="$reset_day"
     case "$month" in
@@ -475,7 +483,14 @@ get_period_start_ts() {
     
     local period_start_ts
     if [ "$day" -ge "$target_day" ]; then
-        period_start_ts=$(date -u -d "${year}-${month}-${target_day} 00:00:00" '+%s' 2>/dev/null || date -u -r "${now_ts}" '+%s' 2>/dev/null)
+        # 用 awk 将年月日转为 epoch 秒（UTC），兼容 BusyBox date -d 不可用
+        period_start_ts=$(awk 'BEGIN{
+            y='"${year}"'; m='"${month}"'; d='"${target_day}"';
+            if(m<=2){y=y-1;m=m+12}
+            A=int(y/100);B=2-A+int(A/4);
+            JD=int(365.25*(y+4716))+int(30.6001*(m+1))+d+B-1524.5;
+            printf "%d", (JD-2440587.5)*86400
+        }')
     else
         local prev_month=$((month - 1))
         [ "$prev_month" -eq 0 ] && { prev_month=12; year=$((year - 1)); }
@@ -490,7 +505,13 @@ get_period_start_ts() {
                 ;;
             04|06|09|11) [ "$target_day" -gt 30 ] && target_day=30 ;;
         esac
-        period_start_ts=$(date -u -d "${year}-${prev_month_str}-${target_day} 00:00:00" '+%s' 2>/dev/null || date -u -r "${now_ts}" '+%s' 2>/dev/null)
+        period_start_ts=$(awk 'BEGIN{
+            y='"${year}"'; m='"${prev_month}"'; d='"${target_day}"';
+            if(m<=2){y=y-1;m=m+12}
+            A=int(y/100);B=2-A+int(A/4);
+            JD=int(365.25*(y+4716))+int(30.6001*(m+1))+d+B-1524.5;
+            printf "%d", (JD-2440587.5)*86400
+        }')
     fi
     echo "$period_start_ts"
 }
@@ -507,7 +528,7 @@ calc_monthly_traffic() {
     
     local saved_rx_prev=0 saved_tx_prev=0 saved_rx_period=0 saved_tx_period=0 saved_last_check=0 saved_period_start=0
     if [ -f "${TRAFFIC_DATA_FILE}" ]; then
-        local tmp_rx_prev tmp_tx_prev tmp_rx_period tmp_tx_period tmp_last_check tmp_period_start
+        _cf_tmp_rx_prev tmp_tx_prev tmp_rx_period tmp_tx_period tmp_last_check tmp_period_start
         while IFS='=' read -r key value; do
             case "$key" in
                 RX_PREV) tmp_rx_prev="$value" ;;
@@ -632,7 +653,7 @@ has_nc_zero_io() {
 get_tcp_ping_nc() {
     local host="${1:-}"
     local port="${2:-443}"
-    local start end ms
+    _cf_start end ms
 
     start=$(get_time_ms) || return 1
     if nc -z -w 2 "${host}" "${port}" >/dev/null 2>&1; then
@@ -651,7 +672,7 @@ get_probe() {
     local port="${3:-443}"
 
     if [ -z "$host" ]; then
-        echo ""
+        echo "null 100"
         return
     fi
 
@@ -668,17 +689,17 @@ get_probe() {
         if [ "$ok" -gt 0 ]; then
             echo "$((total_rtt / ok)) $(( (count - ok) * 100 / count ))"
         else
-            echo "0 100"
+            echo "null 100"
         fi
         return
     fi
 
     local icmp_out
     icmp_out=$(ping -c "$count" -W 2 "$host" 2>/dev/null)
-    local avg_rtt loss
+    _cf_avg_rtt loss
     avg_rtt=$(echo "$icmp_out" | awk -F'[/ ]' '/^rtt/{print $8}' | cut -d. -f1)
     loss=$(echo "$icmp_out" | awk '/packet loss/{for(i=1;i<=NF;i++) if($i~/[0-9]+%/){gsub(/%/,"",$i);printf "%d",$i;exit}}')
-    [ -z "$avg_rtt" ] && avg_rtt=0
+    [ -z "$avg_rtt" ] && avg_rtt="null"
     [ -z "$loss" ] && loss=100
     echo "$avg_rtt $loss"
 }
@@ -702,10 +723,10 @@ write_probe_result() {
 }
 
 refresh_probe_async() {
-    [ -n "$CT_NODE" ] && write_probe_result /dev/shm/.cf_probe_ct get_probe "$CT_NODE" 4 443 &
-    [ -n "$CU_NODE" ] && write_probe_result /dev/shm/.cf_probe_cu get_probe "$CU_NODE" 4 443 &
-    [ -n "$CM_NODE" ] && write_probe_result /dev/shm/.cf_probe_cm get_probe "$CM_NODE" 4 443 &
-    [ -n "$BD_NODE" ] && write_probe_result /dev/shm/.cf_probe_bd get_probe "$BD_NODE" 4 443 &
+    [ -n "$CT_NODE" ] && write_probe_result /tmp/.cf_probe_ct get_probe "$CT_NODE" 4 443 &
+    [ -n "$CU_NODE" ] && write_probe_result /tmp/.cf_probe_cu get_probe "$CU_NODE" 4 443 &
+    [ -n "$CM_NODE" ] && write_probe_result /tmp/.cf_probe_cm get_probe "$CM_NODE" 4 443 &
+    [ -n "$BD_NODE" ] && write_probe_result /tmp/.cf_probe_bd get_probe "$BD_NODE" 4 443 &
     wait
 }
 
@@ -721,8 +742,8 @@ run_network_worker() {
         local now; now=$(date +%s)
 
         if [ $((now - last_ip)) -ge 600 ] || [ "$last_ip" -eq 0 ]; then
-            (curl -s -m 2 --connect-timeout 2 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "ip=" && echo "1" || echo "0") > /dev/shm/.cf_ipv4.tmp && mv /dev/shm/.cf_ipv4.tmp /dev/shm/.cf_ipv4 || true
-            (if ip -6 route show default >/dev/null 2>&1; then curl -6 -s -m 2 --connect-timeout 2 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "ip=" && echo "1" || echo "0"; else echo "0"; fi) > /dev/shm/.cf_ipv6.tmp && mv /dev/shm/.cf_ipv6.tmp /dev/shm/.cf_ipv6 || true
+            (curl -s -m 2 --connect-timeout 2 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "ip=" && echo "1" || echo "0") > /tmp/.cf_ipv4.tmp && mv /tmp/.cf_ipv4.tmp /tmp/.cf_ipv4 || true
+            (if ip -6 route show default >/dev/null 2>&1; then curl -6 -s -m 2 --connect-timeout 2 https://cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "ip=" && echo "1" || echo "0"; else echo "0"; fi) > /tmp/.cf_ipv6.tmp && mv /tmp/.cf_ipv6.tmp /tmp/.cf_ipv6 || true
             last_ip="$now"
         fi
 
@@ -873,12 +894,12 @@ while true; do
     TX_PREV=${TX_NOW}
     PREV_LOOP_TIME=${LOOP_START_TIME}
 
-    [ -f /dev/shm/.cf_ipv4 ] && IPV4=$(cat /dev/shm/.cf_ipv4) || IPV4="0"
-    [ -f /dev/shm/.cf_ipv6 ] && IPV6=$(cat /dev/shm/.cf_ipv6) || IPV6="0"
-    if [ -f /dev/shm/.cf_probe_ct ]; then _p=$(cat /dev/shm/.cf_probe_ct); PING_CT=${_p%% *}; LOSS_CT=${_p##* }; else PING_CT=""; LOSS_CT=""; fi
-    if [ -f /dev/shm/.cf_probe_cu ]; then _p=$(cat /dev/shm/.cf_probe_cu); PING_CU=${_p%% *}; LOSS_CU=${_p##* }; else PING_CU=""; LOSS_CU=""; fi
-    if [ -f /dev/shm/.cf_probe_cm ]; then _p=$(cat /dev/shm/.cf_probe_cm); PING_CM=${_p%% *}; LOSS_CM=${_p##* }; else PING_CM=""; LOSS_CM=""; fi
-    if [ -f /dev/shm/.cf_probe_bd ]; then _p=$(cat /dev/shm/.cf_probe_bd); PING_BD=${_p%% *}; LOSS_BD=${_p##* }; else PING_BD=""; LOSS_BD=""; fi
+    [ -f /tmp/.cf_ipv4 ] && IPV4=$(cat /tmp/.cf_ipv4) || IPV4="0"
+    [ -f /tmp/.cf_ipv6 ] && IPV6=$(cat /tmp/.cf_ipv6) || IPV6="0"
+    if [ -f /tmp/.cf_probe_ct ]; then _p=$(cat /tmp/.cf_probe_ct); PING_CT=${_p%% *}; LOSS_CT=${_p##* }; else PING_CT=""; LOSS_CT=""; fi
+    if [ -f /tmp/.cf_probe_cu ]; then _p=$(cat /tmp/.cf_probe_cu); PING_CU=${_p%% *}; LOSS_CU=${_p##* }; else PING_CU=""; LOSS_CU=""; fi
+    if [ -f /tmp/.cf_probe_cm ]; then _p=$(cat /tmp/.cf_probe_cm); PING_CM=${_p%% *}; LOSS_CM=${_p##* }; else PING_CM=""; LOSS_CM=""; fi
+    if [ -f /tmp/.cf_probe_bd ]; then _p=$(cat /tmp/.cf_probe_bd); PING_BD=${_p%% *}; LOSS_BD=${_p##* }; else PING_BD=""; LOSS_BD=""; fi
 
     EOS=$(escape_json "${OS}")
     EARCH=$(escape_json "${ARCH}")
@@ -911,8 +932,8 @@ EOF
 EOF
 )
         fi
-        REPORT_RESPONSE_FILE="/dev/shm/.cf_probe_response.$$"
-        REPORT_HEADER_FILE="/dev/shm/.cf_probe_headers.$$"
+        REPORT_RESPONSE_FILE="/tmp/.cf_probe_response.$$"
+        REPORT_HEADER_FILE="/tmp/.cf_probe_headers.$$"
         REPORT_HTTP_CODE=$(curl -sS -D "$REPORT_HEADER_FILE" -o "$REPORT_RESPONSE_FILE" -w "%{http_code}" -X POST \
             -H "Content-Type: application/json" \
             -H "X-Agent-Config-Schema: 2" \
@@ -1252,7 +1273,7 @@ uninstall_probe() {
     rm -f "${SCRIPT_FILE}.ctl"
 
     step "抹除共享内存高速缓存区..."
-    rm -f /dev/shm/.cf_ipv4 /dev/shm/.cf_ipv6 /dev/shm/.cf_probe_* 2>/dev/null || true
+    rm -f /tmp/.cf_ipv4 /tmp/.cf_ipv6 /tmp/.cf_probe_* 2>/dev/null || true
 
     step "抹除流量追踪数据..."
     rm -rf /var/lib/${SERVICE_NAME}

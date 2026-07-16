@@ -310,7 +310,7 @@ while IFS='=' read -r key value; do
 done < "${CONFIG_FILE}"
 
 to_uint() {
-    _cf_num=$(printf '%s' "${1:-0}" | sed 's/^0*//')
+    local num=$(printf '%s' "${1:-0}" | sed 's/^0*//')
     case "${_cf_num}" in
         ''|*[!0-9]*) echo 0 ;;
         ?|??|???|????|?????|??????|???????|????????|?????????) echo "${_cf_num}" ;;
@@ -319,7 +319,7 @@ to_uint() {
 }
 
 normalize_reset_day() {
-    _cf_day=$(printf '%s' "${1:-1}" | sed 's/^0*//')
+    local day=$(printf '%s' "${1:-1}" | sed 's/^0*//')
     case "${_cf_day}" in
         '') echo 0 ;;
         *[!0-9]*) echo 1 ;;
@@ -359,7 +359,7 @@ log_warn_debug() {
 }
 
 persist_dynamic_config() {
-    _cf_tmp_file="${CONFIG_FILE}.tmp.$$"
+    local tmp_file="${CONFIG_FILE}.tmp.$$"
     awk -v collect="$1" -v report="$2" -v reset="$3" -v md5="$4" -v ct="$5" -v cu="$6" -v cm="$7" -v bd="$8" '
         BEGIN { c=0; r=0; d=0; m=0; tct=0; tcu=0; tcm=0; tbd=0 }
         /^COLLECT_INTERVAL=/ { print "COLLECT_INTERVAL=\"" collect "\""; c=1; next }
@@ -387,50 +387,52 @@ persist_dynamic_config() {
 }
 
 apply_remote_config() {
-    _cf_response_file="$1"
-    _cf_header_file="$2"
-    _cf_bytes=$(wc -c < "$_cf_response_file" 2>/dev/null || echo 9999)
+    local response_file="$1"
+    local header_file="$2"
+    local bytes=$(wc -c < "$local response_file" 2>/dev/null || echo 9999)
     [ "$_cf_bytes" -le 1024 ] || return 1
-    _cf_body=$(cat "$_cf_response_file" 2>/dev/null) || return 1
-    case "$_cf_body" in ''|*[!a-z0-9_=\&.\-]*) return 1 ;; esac
-    _cf_md5=$(awk 'tolower($1)=="x-agent-config-md5:" { gsub("\r", "", $2); print tolower($2); exit }' "$_cf_header_file")
+    local body=$(cat "$local response_file" 2>/dev/null) || return 1
+    case "$local body" in ''|*[!a-z0-9_=\&.\-]*) return 1 ;; esac
+    local md5=$(awk 'tolower($1)=="x-agent-config-md5:" { gsub("\r", "", $2); print tolower($2); exit }' "$local header_file")
     [ "${#_cf_md5}" -eq 32 ] || return 1
     case "$_cf_md5" in *[!0-9a-f]*) return 1 ;; esac
 
-    _cf_rx_corr=""
-    _cf_tx_corr=""
-    IFS='&' read -ra _cf_fields <<< "$_cf_body"
-    for _f in "${_cf_fields[@]}"; do
+    local rx_corr=""
+    local tx_corr=""
+    local saved_ifs="$IFS"
+    IFS='&'
+    for _f in $_cf_body; do
         _k="${_f%%=*}"; _v="${_f#*=}"
         case "$_k" in
-            collect_interval) _cf_collect="$_v" ;;
-            report_interval)  _cf_report="$_v" ;;
-            reset_day)        _cf_reset="$_v" ;;
-            schema_version)   _cf_schema="$_v" ;;
-            custom_ct)        _cf_ct="$_v" ;;
-            custom_cu)        _cf_cu="$_v" ;;
-            custom_cm)        _cf_cm="$_v" ;;
-            custom_bd)        _cf_bd="$_v" ;;
-            rx_correction)    _cf_rx_corr="$_v" ;;
-            tx_correction)    _cf_tx_corr="$_v" ;;
+            collect_interval) local collect="$_v" ;;
+            report_interval)  local report="$_v" ;;
+            reset_day)        local reset="$_v" ;;
+            schema_version)   local schema="$_v" ;;
+            custom_ct)        local ct="$_v" ;;
+            custom_cu)        local cu="$_v" ;;
+            custom_cm)        local cm="$_v" ;;
+            custom_bd)        local bd="$_v" ;;
+            rx_correction)    local rx_corr="$_v" ;;
+            tx_correction)    local tx_corr="$_v" ;;
         esac
     done
+    IFS="$local saved_ifs"
 
     case "$_cf_collect" in 0|1|2|5|10) ;; *) return 1 ;; esac
     case "$_cf_report" in 30|60|120|180) ;; *) return 1 ;; esac
     case "$_cf_reset" in 0|[1-9]|1[0-9]|2[0-9]|30|31) ;; *) return 1 ;; esac
-    [ "$_cf_schema" = "2" ] || return 1
+    [ "$local schema" = "2" ] || return 1
     [ "$_cf_report" -ge "$_cf_collect" ] || return 1
-    if [ "$_cf_md5" != "${CONFIG_MD5:-none}" ]; then
+    if [ "$local md5" != "${CONFIG_MD5:-none}" ]; then
         persist_dynamic_config "$_cf_collect" "$_cf_report" "$_cf_reset" "$_cf_md5" "$_cf_ct" "$_cf_cu" "$_cf_cm" "$_cf_bd" || return 1
-        COLLECT_INTERVAL="$_cf_collect"
-        REPORT_INTERVAL="$_cf_report"
-        RESET_DAY="$_cf_reset"
-        CT_NODE="$_cf_ct"
-        CU_NODE="$_cf_cu"
-        CM_NODE="$_cf_cm"
-        BD_NODE="$_cf_bd"
-        CONFIG_MD5="$_cf_md5"
+        COLLECT_INTERVAL="$local collect"
+        REPORT_INTERVAL="$local report"
+        RESET_DAY="$local reset"
+        CT_NODE="$local ct"
+        CU_NODE="$local cu"
+        CM_NODE="$local cm"
+        BD_NODE="$local bd"
+        CONFIG_MD5="$local md5"
         ACTIVE_INTERVAL="$REPORT_INTERVAL"
         [ "$COLLECT_INTERVAL" -gt 0 ] && ACTIVE_INTERVAL="$COLLECT_INTERVAL"
         log_info "Dynamic configuration applied: md5=${CONFIG_MD5} ct=${CT_NODE:-} cu=${CU_NODE:-} cm=${CM_NODE:-} bd=${BD_NODE:-}"
@@ -459,69 +461,69 @@ apply_remote_config() {
 }
 
 normalize_correction_value() {
-    _cf_corr_val="${1:-0}"
-    [ -z "$_cf_corr_val" ] && _cf_corr_val=0
+    local corr_val="${1:-0}"
+    [ -z "$local corr_val" ] && local corr_val=0
     printf '%s' "$_cf_corr_val"
 }
 
 is_valid_correction_value() {
-    _cf_check_val=$(normalize_correction_value "$1")
-    awk -v v="$_cf_check_val" -v max="$MAX_TRAFFIC_CORRECTION_GB" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v + 0 >= 0 && v + 0 <= max) }'
+    local check_val=$(normalize_correction_value "$1")
+    awk -v v="$local check_val" -v max="$MAX_TRAFFIC_CORRECTION_GB" 'BEGIN { exit !(v ~ /^[0-9]+([.][0-9]+)?$/ && v + 0 >= 0 && v + 0 <= max) }'
 }
 
 send_correction_confirm() {
-    _cf_ack_rx=$(normalize_correction_value "$1")
-    _cf_ack_tx=$(normalize_correction_value "$2")
+    local ack_rx=$(normalize_correction_value "$1")
+    local ack_tx=$(normalize_correction_value "$2")
     is_valid_correction_value "$_cf_ack_rx" && is_valid_correction_value "$_cf_ack_tx" || return 1
-    _cf_ack_payload="{\"id\":\"$SERVER_ID\",\"secret\":\"$SECRET\",\"rx_correction\":$_cf_ack_rx,\"tx_correction\":$_cf_ack_tx}"
-    _cf_ack_http=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+    local ack_payload="{\"id\":\"$SERVER_ID\",\"secret\":\"$SECRET\",\"rx_correction\":$local ack_rx,\"tx_correction\":$local ack_tx}"
+    local ack_http=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -d "$_cf_ack_payload" -m 4 --connect-timeout 2 "$WORKER_URL" 2>/dev/null || echo 000)
-    case "$_cf_ack_http" in ''|*[!0-9]*) _cf_ack_http=000 ;; esac
+    case "$local ack_http" in ''|*[!0-9]*) local ack_http=000 ;; esac
     if [ "$_cf_ack_http" -ge 200 ] && [ "$_cf_ack_http" -lt 300 ]; then
-        log_info "Traffic correction confirm sent: RX=${_cf_ack_rx}GB TX=${_cf_ack_tx}GB"
+        log_info "Traffic correction confirm sent: RX=${local ack_rx}GB TX=${local ack_tx}GB"
         return 0
     fi
-    log_warn_debug "Traffic correction confirm failed: http=${_cf_ack_http} RX=${_cf_ack_rx}GB TX=${_cf_ack_tx}GB"
+    log_warn_debug "Traffic correction confirm failed: http=${local ack_http} RX=${local ack_rx}GB TX=${local ack_tx}GB"
     return 1
 }
 
 apply_traffic_correction() {
-    local rx_val="${1:-0}"
-    local tx_val="${2:-0}"
-    [ -z "$rx_val" ] && rx_val=0
-    [ -z "$tx_val" ] && tx_val=0
-    is_valid_correction_value "$rx_val" && is_valid_correction_value "$tx_val" || return 1
-    local rx_bytes=0 tx_bytes=0
-    rx_bytes=$(printf '%s' "$rx_val" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}')
-    tx_bytes=$(printf '%s' "$tx_val" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}')
-    local saved_rx_prev=0 saved_tx_prev=0 saved_rx_period=0 saved_tx_period=0 saved_last_check=0 saved_period_start=0
+    _cf_tc_rx_val="${1:-0}"
+    _cf_tc_tx_val="${2:-0}"
+    [ -z "$_cf_tc_rx_val" ] && _cf_tc_rx_val=0
+    [ -z "$_cf_tc_tx_val" ] && _cf_tc_tx_val=0
+    is_valid_correction_value "$_cf_tc_rx_val" && is_valid_correction_value "$_cf_tc_tx_val" || return 1
+    _cf_tc_rx_bytes=0; _cf_tc_tx_bytes=0
+    _cf_tc_rx_bytes=$(printf '%s' "$_cf_tc_rx_val" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}')
+    _cf_tc_tx_bytes=$(printf '%s' "$_cf_tc_tx_val" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}')
+    _cf_tc_saved_rx_prev=0; _cf_tc_saved_tx_prev=0; _cf_tc_saved_rx_period=0; _cf_tc_saved_tx_period=0; _cf_tc_saved_last_check=0; _cf_tc_saved_period_start=0
     if [ -f "${TRAFFIC_DATA_FILE}" ]; then
         while IFS='=' read -r key value; do
             case "$key" in
-                RX_PREV) saved_rx_prev="${value%%\"*}"; saved_rx_prev="${saved_rx_prev#\"}" ;;
-                TX_PREV) saved_tx_prev="${value%%\"*}"; saved_tx_prev="${saved_tx_prev#\"}" ;;
-                RX_PERIOD) saved_rx_period="${value%%\"*}"; saved_rx_period="${saved_rx_period#\"}" ;;
-                TX_PERIOD) saved_tx_period="${value%%\"*}"; saved_tx_period="${saved_tx_period#\"}" ;;
-                LAST_CHECK) saved_last_check="${value%%\"*}"; saved_last_check="${saved_last_check#\"}" ;;
-                PERIOD_START) saved_period_start="${value%%\"*}"; saved_period_start="${saved_period_start#\"}" ;;
+                RX_PREV) _cf_tc_saved_rx_prev="${value%%\"*}"; _cf_tc_saved_rx_prev="${_cf_tc_saved_rx_prev#\"}" ;;
+                TX_PREV) _cf_tc_saved_tx_prev="${value%%\"*}"; _cf_tc_saved_tx_prev="${_cf_tc_saved_tx_prev#\"}" ;;
+                RX_PERIOD) _cf_tc_saved_rx_period="${value%%\"*}"; _cf_tc_saved_rx_period="${_cf_tc_saved_rx_period#\"}" ;;
+                TX_PERIOD) _cf_tc_saved_tx_period="${value%%\"*}"; _cf_tc_saved_tx_period="${_cf_tc_saved_tx_period#\"}" ;;
+                LAST_CHECK) _cf_tc_saved_last_check="${value%%\"*}"; _cf_tc_saved_last_check="${_cf_tc_saved_last_check#\"}" ;;
+                PERIOD_START) _cf_tc_saved_period_start="${value%%\"*}"; _cf_tc_saved_period_start="${_cf_tc_saved_period_start#\"}" ;;
             esac
         done < "${TRAFFIC_DATA_FILE}"
     fi
-    local now_ts
-    now_ts=$(date +%s)
-    saved_rx_period=${rx_bytes}
-    saved_tx_period=${tx_bytes}
-    log_info "Traffic correction applied: RX=${rx_val}GB (${rx_bytes} bytes) TX=${tx_val}GB (${tx_bytes} bytes)"
+    _cf_tc_now_ts=$(date +%s)
+    _cf_tc_saved_rx_period=${_cf_tc_rx_bytes}
+    _cf_tc_saved_tx_period=${_cf_tc_tx_bytes}
+    log_info "Traffic correction applied: RX=${_cf_tc_rx_val}GB (${_cf_tc_rx_bytes} bytes) TX=${_cf_tc_tx_val}GB (${_cf_tc_tx_bytes} bytes)"
     mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
-    cat > "${TRAFFIC_DATA_FILE}" << EOF
-RX_PREV=${saved_rx_prev}
-TX_PREV=${saved_tx_prev}
-RX_PERIOD=${saved_rx_period}
-TX_PERIOD=${saved_tx_period}
-LAST_CHECK=${now_ts}
-PERIOD_START=${saved_period_start}
+    cat > "${TRAFFIC_DATA_FILE}.tmp" << EOF
+RX_PREV=${_cf_tc_saved_rx_prev}
+TX_PREV=${_cf_tc_saved_tx_prev}
+RX_PERIOD=${_cf_tc_saved_rx_period}
+TX_PERIOD=${_cf_tc_saved_tx_period}
+LAST_CHECK=${_cf_tc_now_ts}
+PERIOD_START=${_cf_tc_saved_period_start}
 EOF
+    mv "${TRAFFIC_DATA_FILE}.tmp" "${TRAFFIC_DATA_FILE}" 2>/dev/null || true
 }
 
 escape_json() {
@@ -540,8 +542,8 @@ get_net_bytes() {
 }
 
 is_leap_year() {
-    year=$1
-    [ $((year % 4)) -eq 0 ] && [ $((year % 100)) -ne 0 ] || [ $((year % 400)) -eq 0 ]
+    local ly_year=$1
+    [ $((_cf_ly_year % 4)) -eq 0 ] && [ $((_cf_ly_year % 100)) -ne 0 ] || [ $((_cf_ly_year % 400)) -eq 0 ]
 }
 
 get_period_start_ts() {
@@ -549,17 +551,16 @@ get_period_start_ts() {
     [ "$reset_day" -eq 0 ] 2>/dev/null && { echo "0"; return; }
     now_ts="$2"
 
-    # 只用 epoch 秒
-    year=$(date +%Y 2>/dev/null || echo 1970)
-    month=$(date +%m 2>/dev/null || echo 1)
-    day=$(to_uint "$(date +%d 2>/dev/null || echo 1)")
-
-    # BusyBox fallback（无 date -d 时）
-    if [ "${year}" = "1970" ]; then
-        # 退化方案：直接按 30 天周期（OpenWrt 保底逻辑）
-        echo $((now_ts - 30 * 86400))
-        return
-    fi
+    # 用 awk 将 epoch 秒转换为 year month day（UTC），避免 BusyBox date -d 不可用
+    _date_parts=$(awk 'BEGIN{
+        t='"${now_ts}"'; d=int(t/86400)+719468; y=int((d-122.1)/365.25);
+        m=int((d-365.25*y+122.1)/30.6001); day=d-int(30.6001*(m+(m>2?1:0)-3)+1.5);
+        if(m<14) m=m-1; else { m=m-13; if(m>2) y=y+1 }
+        printf "%04d %02d %02d\n", y, m, day
+    }')
+    year=$(echo "$_date_parts" | awk '{print $1}')
+    month=$(echo "$_date_parts" | awk '{print $2}')
+    day=$(echo "$_date_parts" | awk '{print $3}')
 
     target_day="$reset_day"
 
@@ -576,19 +577,40 @@ get_period_start_ts() {
             ;;
     esac
 
-    # 用 epoch 回算（避免 date -d）
-    # 直接算“本月 reset_day 00:00”的近似值
-
-    # 当前月1号时间
-    month_start=$((now_ts - ( (day - 1) * 86400 )))
-
-    reset_ts=$((month_start + (target_day - 1) * 86400))
-
-    if [ "$day" -lt "$target_day" ]; then
-        reset_ts=$((reset_ts - 30 * 86400))
+    local period_start_ts
+    if [ "$day" -ge "$target_day" ]; then
+        # 用 awk 将年月日转为 epoch 秒（UTC），兼容 BusyBox date -d 不可用
+        period_start_ts=$(awk 'BEGIN{
+            y='"${year}"'; m='"${month}"'; d='"${target_day}"';
+            if(m<=2){y=y-1;m=m+12}
+            A=int(y/100);B=2-A+int(A/4);
+            JD=int(365.25*(y+4716))+int(30.6001*(m+1))+d+B-1524.5;
+            printf "%d", (JD-2440587.5)*86400
+        }')
+    else
+        local prev_month=$((month - 1))
+        [ "$prev_month" -eq 0 ] && { prev_month=12; year=$((year - 1)); }
+        local prev_month_str=$(printf "%02d" "$prev_month")
+        case "$prev_month" in
+            02)
+                if is_leap_year "$year"; then
+                    [ "$target_day" -gt 29 ] && target_day=29
+                else
+                    [ "$target_day" -gt 28 ] && target_day=28
+                fi
+                ;;
+            04|06|09|11) [ "$target_day" -gt 30 ] && target_day=30 ;;
+        esac
+        period_start_ts=$(awk 'BEGIN{
+            y='"${year}"'; m='"${prev_month}"'; d='"${target_day}"';
+            if(m<=2){y=y-1;m=m+12}
+            A=int(y/100);B=2-A+int(A/4);
+            JD=int(365.25*(y+4716))+int(30.6001*(m+1))+d+B-1524.5;
+            printf "%d", (JD-2440587.5)*86400
+        }')
     fi
 
-    echo "$reset_ts"
+    echo "$period_start_ts"
 }
 
 calc_monthly_traffic() {
@@ -687,7 +709,7 @@ has_nc_zero_io() {
 get_tcp_ping_nc() {
     local host="${1:-}"
     local port="${2:-443}"
-    local start end ms
+    _cf_start end ms
 
     start=$(get_time_ms) || return 1
     if nc -z -w 2 "${host}" "${port}" >/dev/null 2>&1; then
@@ -706,7 +728,7 @@ get_probe() {
     local port="${3:-443}"
 
     if [ -z "$host" ]; then
-        echo ""
+        echo "null 100"
         return
     fi
 
@@ -723,17 +745,17 @@ get_probe() {
         if [ "$ok" -gt 0 ]; then
             echo "$((total_rtt / ok)) $(( (count - ok) * 100 / count ))"
         else
-            echo "0 100"
+            echo "null 100"
         fi
         return
     fi
 
     local icmp_out
     icmp_out=$(ping -c "$count" -W 2 "$host" 2>/dev/null)
-    local avg_rtt loss
+    _cf_avg_rtt loss
     avg_rtt=$(echo "$icmp_out" | awk -F'[/ ]' '/^rtt/{print $8}' | cut -d. -f1)
     loss=$(echo "$icmp_out" | awk '/packet loss/{for(i=1;i<=NF;i++) if($i~/[0-9]+%/){gsub(/%/,"",$i);printf "%d",$i;exit}}')
-    [ -z "$avg_rtt" ] && avg_rtt=0
+    [ -z "$avg_rtt" ] && avg_rtt="null"
     [ -z "$loss" ] && loss=100
     echo "$avg_rtt $loss"
 }
@@ -983,15 +1005,6 @@ PROBE_EOF
 # 创建 procd 服务脚本 / 手动启停入口
 # ---------------------------------------------------------------
 create_service() {
-    esc_id=$(printf '%s' "$SERVER_ID" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    esc_sec=$(printf '%s' "$SECRET" | sed 's/\\/\\\\/g; s/"/\\"/g; s/%/%%/g')
-    esc_url=$(printf '%s' "$WORKER_URL" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    esc_ct=$(printf '%s' "$CT_NODE" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    esc_cu=$(printf '%s' "$CU_NODE" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    esc_cm=$(printf '%s' "$CM_NODE" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    esc_bd=$(printf '%s' "$BD_NODE" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    esc_reset_day=$(printf '%s' "$RESET_DAY" | sed 's/\\/\\\\/g; s/"/\\"/g')
-
     exec_line="/bin/sh \"${SCRIPT_FILE}\""
 
     if [ "$INIT_SYSTEM" = "procd" ]; then
@@ -1332,7 +1345,7 @@ EOF
     case "$INIT_SYSTEM" in
         procd) echo "procd 系统服务 (${PROCD_FILE})" ;;
         openrc) echo "OpenRC 系统服务 (${PROCD_FILE})" ;;
-        *)     echo "手动后台进程 (PID: $(cat "$PID_FILE"))" ;;
+        *)     if [ -f "$PID_FILE" ]; then echo "手动后台进程 (PID: $(cat "$PID_FILE"))"; else echo "手动后台进程"; fi ;;
     esac
     printf  '  管理指令 :\n'
     if [ "$INIT_SYSTEM" = "procd" ]; then

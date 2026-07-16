@@ -343,7 +343,7 @@ apply_traffic_correction() {
     saved_tx_period=${tx_bytes}
     log_info "Traffic correction applied: RX=${rx_val}GB (${rx_bytes} bytes) TX=${tx_val}GB (${tx_bytes} bytes)"
     mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
-    cat > "${TRAFFIC_DATA_FILE}" << EOF
+    cat > "${TRAFFIC_DATA_FILE}.tmp" << EOF
 RX_PREV=${saved_rx_prev}
 TX_PREV=${saved_tx_prev}
 RX_PERIOD=${saved_rx_period}
@@ -351,6 +351,7 @@ TX_PERIOD=${saved_tx_period}
 LAST_CHECK=${now_ts}
 PERIOD_START=${saved_period_start}
 EOF
+    mv "${TRAFFIC_DATA_FILE}.tmp" "${TRAFFIC_DATA_FILE}" 2>/dev/null || true
 }
 
 escape_json() {
@@ -396,14 +397,21 @@ get_period_start_ts() {
     [ "${reset_day}" -eq 0 ] 2>/dev/null && { echo "0"; return; }
     local now_ts="${2:-0}"
     local year month day
-    year=$(date -u -r "${now_ts}" '+%Y' 2>/dev/null)
-    month=$(date -u -r "${now_ts}" '+%m' 2>/dev/null)
-    day=$(date -u -r "${now_ts}" '+%d' 2>/dev/null)
-    
+    year=$(date -u -r "${now_ts}" '+%Y' 2>/dev/null || echo "")
+    month=$(date -u -r "${now_ts}" '+%m' 2>/dev/null || echo "")
+    day=$(date -u -r "${now_ts}" '+%d' 2>/dev/null || echo "")
+
+    # date 失败时回退为当前时间
+    if [ -z "$year" ] || [ -z "$month" ] || [ -z "$day" ]; then
+        year=$(date -u '+%Y' 2>/dev/null || echo "1970")
+        month=$(date -u '+%m' 2>/dev/null || echo "01")
+        day=$(date -u '+%d' 2>/dev/null || echo "01")
+    fi
+
     local target_day="${reset_day}"
-    case "${month:-}" in
-        02) 
-            if is_leap_year "${year:-0}"; then
+    case "${month}" in
+        02)
+            if is_leap_year "${year}"; then
                 [ "${target_day}" -gt 29 ] && target_day=29
             else
                 [ "${target_day}" -gt 28 ] && target_day=28
@@ -411,17 +419,17 @@ get_period_start_ts() {
             ;;
         04|06|09|11) [ "${target_day}" -gt 30 ] && target_day=30 ;;
     esac
-    
+
     local period_start_ts
-    if [ "${day:-0}" -ge "${target_day}" ]; then
-        period_start_ts=$(date -u -j -f "%Y-%m-%d %H:%M:%S" "${year:-0}-${month:-01}-${target_day} 00:00:00" '+%s' 2>/dev/null || echo "${now_ts}")
+    if [ "${day}" -ge "${target_day}" ]; then
+        period_start_ts=$(date -u -j -f "%Y-%m-%d %H:%M:%S" "${year}-${month}-${target_day} 00:00:00" '+%s' 2>/dev/null || echo "${now_ts}")
     else
         local prev_month=$((month - 1))
         [ "${prev_month}" -eq 0 ] && { prev_month=12; year=$((year - 1)); }
         local prev_month_str=$(printf "%02d" "${prev_month}")
         case "${prev_month}" in
-            02) 
-                if is_leap_year "${year:-0}"; then
+            02)
+                if is_leap_year "${year}"; then
                     [ "${target_day}" -gt 29 ] && target_day=29
                 else
                     [ "${target_day}" -gt 28 ] && target_day=28
@@ -429,7 +437,7 @@ get_period_start_ts() {
                 ;;
             04|06|09|11) [ "${target_day}" -gt 30 ] && target_day=30 ;;
         esac
-        period_start_ts=$(date -u -j -f "%Y-%m-%d %H:%M:%S" "${year:-0}-${prev_month_str}-${target_day} 00:00:00" '+%s' 2>/dev/null || echo "${now_ts}")
+        period_start_ts=$(date -u -j -f "%Y-%m-%d %H:%M:%S" "${year}-${prev_month_str}-${target_day} 00:00:00" '+%s' 2>/dev/null || echo "${now_ts}")
     fi
     echo "${period_start_ts}"
 }
@@ -498,12 +506,44 @@ EOF
 }
 
 get_cpu_stat() {
-    top -l 2 -n 0 2>/dev/null | grep "CPU usage" | tail -1 | awk '{
-        split($3, user, "%");
-        split($5, sys, "%");
-        total = user[1] + sys[1];
-        printf "%.2f\n", total
-    }' || echo "0.00"
+    # 使用 sysctl 获取 CPU ticks，避免 top -l 2 耗时 3-5 秒
+    local cpu_ticks
+    cpu_ticks=$(sysctl -n kern.cp_time 2>/dev/null || echo "")
+    if [ -n "$cpu_ticks" ]; then
+        # kern.cp_time 格式: user nice system interrupt idle (ticks)
+        local user nice sys intr idle
+        user=$(echo "$cpu_ticks" | awk '{print $1}')
+        nice=$(echo "$cpu_ticks" | awk '{print $2}')
+        sys=$(echo "$cpu_ticks" | awk '{print $3}')
+        intr=$(echo "$cpu_ticks" | awk '{print $4}')
+        idle=$(echo "$cpu_ticks" | awk '{print $5}')
+        local total=$((user + nice + sys + intr + idle))
+        # 保存上次的值用于差值计算
+        local prev_total_file="/tmp/cf-probe/.cf_cpu_total"
+        local prev_idle_file="/tmp/cf-probe/.cf_cpu_idle"
+        local prev_total=0 prev_idle=0
+        [ -f "$prev_total_file" ] && prev_total=$(cat "$prev_total_file" 2>/dev/null || echo 0)
+        [ -f "$prev_idle_file" ] && prev_idle=$(cat "$prev_idle_file" 2>/dev/null || echo 0)
+        mkdir -p /tmp/cf-probe 2>/dev/null || true
+        echo "$total" > "$prev_total_file"
+        echo "$idle" > "$prev_idle_file"
+        local diff_total=$((total - prev_total))
+        local diff_idle=$((idle - prev_idle))
+        if [ "$diff_total" -gt 0 ]; then
+            local usage=$(( (diff_total - diff_idle) * 100 / diff_total ))
+            printf "%.2f\n" "$usage"
+        else
+            echo "0.00"
+        fi
+    else
+        # fallback: 使用 top -l 1（单次采样，约 1 秒）
+        top -l 1 -n 0 2>/dev/null | grep "CPU usage" | tail -1 | awk '{
+            split($3, user, "%");
+            split($5, sys, "%");
+            total = user[1] + sys[1];
+            printf "%.2f\n", total
+        }' || echo "0.00"
+    fi
 }
 
 get_memory_stats() {
@@ -710,7 +750,7 @@ get_probe() {
     local port="${3:-443}"
 
     if [ -z "$host" ]; then
-        echo ""
+        echo "null 100"
         return
     fi
 
@@ -727,17 +767,17 @@ get_probe() {
         if [ "$ok" -gt 0 ]; then
             echo "$((total_rtt / ok)) $(( (count - ok) * 100 / count ))"
         else
-            echo "0 100"
+            echo "null 100"
         fi
         return
     fi
 
     local icmp_out
-    icmp_out=$(ping -c "$count" -W 2 "$host" 2>/dev/null)
+    icmp_out=$(ping -c "$count" -W 2000 "$host" 2>/dev/null)
     local avg_rtt loss
     avg_rtt=$(echo "$icmp_out" | awk -F'[/ ]' '/^rtt/{print $8}' | cut -d. -f1)
     loss=$(echo "$icmp_out" | awk '/packet loss/{for(i=1;i<=NF;i++) if($i~/[0-9]+%/){gsub(/%/,"",$i);printf "%d",$i;exit}}')
-    [ -z "$avg_rtt" ] && avg_rtt=0
+    [ -z "$avg_rtt" ] && avg_rtt="null"
     [ -z "$loss" ] && loss=100
     echo "$avg_rtt $loss"
 }
@@ -901,7 +941,7 @@ while true; do
     LOAD_AVG=""
     loadavg_raw=$(sysctl vm.loadavg 2>/dev/null || echo "")
     if [ -n "${loadavg_raw:-}" ]; then
-        LOAD_AVG=$(echo "${loadavg_raw}" | sed 's/[{}]//g' | awk '{print $3, $4, $5}')
+        LOAD_AVG=$(echo "${loadavg_raw}" | sed 's/[{}]//g' | awk '{print $1, $2, $3}')
     fi
     LOAD_AVG=${LOAD_AVG:-"0 0 0"}
     
